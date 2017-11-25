@@ -102,7 +102,7 @@ typedef enum IOMODE {
 /*
  * Information specific to a node.
  */
-typedef struct NODE {
+typedef struct  {
     uint64_t    vaddr;                  /* Virtual address */
     uint32_t    lid;                    /* Local ID */
     uint32_t    qpn;                    /* Queue pair number */
@@ -111,6 +111,7 @@ typedef struct NODE {
     uint32_t    rkey;                   /* Remote key */
     uint32_t    alt_lid;                /* Alternate Path Local LID */
     uint32_t    rd_atomic;              /* Number of read/atomics supported */
+    uint64_t    gid[2];                 /* GID */
 } NODE;
 
 
@@ -2087,6 +2088,19 @@ ib_open(DEVICE *dev)
 	    dev->lnode.lid += Req.src_path_bits & ((1 << port_attr.lmc) - 1);
     }
 
+
+    /* Set GID */
+    {
+        union ibv_gid tmp_gid;
+        if(ibv_query_gid(dev->ib.context, dev->ib.port, 0, &tmp_gid)) {
+            printf("Error: Failed to query GID\n");
+            exit(0);
+        }
+
+        memcpy(&dev->lnode.gid, &tmp_gid.raw, 16);
+
+    }
+
     /* Create QP */
     rd_create_qp(dev, dev->ib.context, 0);
 
@@ -2151,6 +2165,24 @@ static void
 ib_prep(DEVICE *dev)
 {
     int flags;
+    
+    struct ibv_ah_attr ah_attr ={
+        .dlid          = dev->rnode.lid,
+        .port_num      = dev->ib.port,
+        .static_rate   = dev->ib.rate,
+	.src_path_bits = Req.src_path_bits,
+        .sl            = Req.sl
+    };
+    struct ibv_global_route grh;
+    memset(&grh, 0, sizeof(struct ibv_global_route));
+    memcpy(grh.dgid.raw, dev->rnode.gid, 16);
+    grh.flow_label = 0;
+    grh.sgid_index = 0;
+    grh.hop_limit = 0;
+    grh.traffic_class = 0;
+    ah_attr.grh = grh;
+    ah_attr.is_global = 1;
+    
     struct ibv_qp_attr rtr_attr ={
         .qp_state           = IBV_QPS_RTR,
         .path_mtu           = dev->ib.mtu,
@@ -2163,9 +2195,12 @@ ib_prep(DEVICE *dev)
             .port_num       = dev->ib.port,
             .static_rate    = dev->ib.rate,
 	    .src_path_bits  = Req.src_path_bits,
-            .sl             = Req.sl
+            .sl             = Req.sl,
+            .is_global      = 1,
+            .grh            = grh
         }
     };
+    
     struct ibv_qp_attr rts_attr ={
         .qp_state          = IBV_QPS_RTS,
         .timeout           = LOCAL_ACK_TIMEOUT,
@@ -2182,13 +2217,6 @@ ib_prep(DEVICE *dev)
 	    .src_path_bits = Req.src_path_bits,
             .sl            = Req.sl
         }
-    };
-    struct ibv_ah_attr ah_attr ={
-        .dlid          = dev->rnode.lid,
-        .port_num      = dev->ib.port,
-        .static_rate   = dev->ib.rate,
-	.src_path_bits = Req.src_path_bits,
-        .sl            = Req.sl
     };
 
     if (dev->trans == IBV_QPT_UD) {
@@ -2557,6 +2585,8 @@ enc_node(NODE *host)
     enc_int(host->rkey,      sizeof(host->rkey));
     enc_int(host->alt_lid,   sizeof(host->alt_lid));
     enc_int(host->rd_atomic, sizeof(host->rd_atomic));
+    enc_int(host->gid[0],    sizeof(host->gid[0]));
+    enc_int(host->gid[1],    sizeof(host->gid[1]));
 }
 
 
@@ -2574,6 +2604,8 @@ dec_node(NODE *host)
     host->rkey      = dec_int(sizeof(host->rkey));
     host->alt_lid   = dec_int(sizeof(host->alt_lid));
     host->rd_atomic = dec_int(sizeof(host->rd_atomic));
+    host->gid[0]    = dec_int(sizeof(host->gid[0]));
+    host->gid[1]    = dec_int(sizeof(host->gid[1]));
 }
 
 
