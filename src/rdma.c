@@ -124,6 +124,7 @@ typedef struct IBINFO {
     int                 rate;           /* Static rate */
     struct ibv_context *context;        /* Context */
     struct ibv_device **devlist;        /* Device list */
+    uint8_t		link_layer;	/* Linklayer used */
 } IBINFO;
 
 
@@ -2086,18 +2087,22 @@ ib_open(DEVICE *dev)
         dev->lnode.lid = port_attr.lid;
 	if (port_attr.lmc > 0)
 	    dev->lnode.lid += Req.src_path_bits & ((1 << port_attr.lmc) - 1);
+
+        dev->ib.link_layer = port_attr.link_layer;
+
     }
 
 
     /* Set GID */
     {
-        union ibv_gid tmp_gid;
-        if(ibv_query_gid(dev->ib.context, dev->ib.port, 0, &tmp_gid)) {
-            printf("Error: Failed to query GID\n");
-            exit(0);
+	if(dev->ib.link_layer == IBV_LINK_LAYER_ETHERNET) {
+            union ibv_gid tmp_gid;
+            if(ibv_query_gid(dev->ib.context, dev->ib.port, 0, &tmp_gid)) {
+                printf("Error: Failed to query GID\n");
+                exit(0);
+            }
+            memcpy(&dev->lnode.gid, &tmp_gid.raw, 16); 
         }
-
-        memcpy(&dev->lnode.gid, &tmp_gid.raw, 16);
 
     }
 
@@ -2173,6 +2178,7 @@ ib_prep(DEVICE *dev)
 	.src_path_bits = Req.src_path_bits,
         .sl            = Req.sl
     };
+    
     struct ibv_global_route grh;
     memset(&grh, 0, sizeof(struct ibv_global_route));
     memcpy(grh.dgid.raw, dev->rnode.gid, 16);
@@ -2180,9 +2186,13 @@ ib_prep(DEVICE *dev)
     grh.sgid_index = 0;
     grh.hop_limit = 0;
     grh.traffic_class = 0;
-    ah_attr.grh = grh;
-    ah_attr.is_global = 1;
     
+    struct ibv_global_route z_grh = {0};
+    
+    if(dev->ib.link_layer == IBV_LINK_LAYER_ETHERNET) {
+        ah_attr.grh = grh;
+        ah_attr.is_global = 1;
+    }
     struct ibv_qp_attr rtr_attr ={
         .qp_state           = IBV_QPS_RTR,
         .path_mtu           = dev->ib.mtu,
@@ -2196,10 +2206,12 @@ ib_prep(DEVICE *dev)
             .static_rate    = dev->ib.rate,
 	    .src_path_bits  = Req.src_path_bits,
             .sl             = Req.sl,
-            .is_global      = 1,
-            .grh            = grh
+            .is_global      = dev->ib.link_layer == IBV_LINK_LAYER_ETHERNET ? 1 : 0,
+            .grh            = dev->ib.link_layer == IBV_LINK_LAYER_ETHERNET ? grh : (z_grh)
         }
     };
+    if(dev->ib.link_layer == IBV_LINK_LAYER_ETHERNET)
+        rtr_attr.ah_attr.grh = grh;
     
     struct ibv_qp_attr rts_attr ={
         .qp_state          = IBV_QPS_RTS,
